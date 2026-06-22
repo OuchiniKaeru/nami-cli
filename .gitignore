@@ -1,0 +1,54 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# エディタ
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+
+# 環境変数
+.env
+.env.*
+!.env.sample
+
+# Nami固有
+.nami/
+*.session.jsonl
+
+# ビルドアーティファクト
+*.o
+*.so
+*.dylib
+*.dll
+*.exe
+*.wasm
+
+# テストカバレッジ
+coverage/
+*.profraw
+*.profdata
+
+# ログ
+*.log
+logs/
+
+# 一時ファイル
+tmp/
+temp/
+*.tmp
+
+# ドキュメント生成
+docs/_build/
+target/doc/
+
+# バイナリ
+nami
+agent

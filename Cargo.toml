@@ -1,0 +1,33 @@
+[package]
+name = "nami"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "nami"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nami"
+path = "src/main.rs"
+
+[features]
+default = []
+mcp = []
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+autoagents = { version = "0.3.7", features = ["openai", "ollama", "anthropic", "azure_openai", "google", "groq", "openrouter"] }
+autoagents-derive = "0.3.7"
+autoagents-toolkit = { version = "0.3.7", features = ["mcp"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"

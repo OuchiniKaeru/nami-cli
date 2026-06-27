@@ -1,500 +1,288 @@
-# Nami - Local-first AI Agent Framework
+# nami-cli
 
-Rustで実装されたローカルファーストのAIエージェントフレームワークです。AutoAgentsをバックエンドとして使用し、柔軟なエージェント設定と実行をサポートします。
+Rust のみで動作する軽量な CLI AI エージェントです。
+OpenAI 互換 API と Gemini に対応し、Skill（ローカル機能）と MCP（Model Context Protocol）の両方をツールとして使うことができます。
 
-## 特徴
+## 主な機能
 
-- **ローカルファースト**: ローカル環境でエージェントを実行
-- **複数LLMプロバイダー対応**: OpenAI, Anthropic, Google, OpenRouter, Ollama, Groq, Azure OpenAI
-- **柔軟な設定**: YAMLファイルでエージェントの動作をカスタマイズ
-- **スキルシステム**: 再利用可能なスキルの定義と実行
-- **MCP対応**: Model Context Protocolによるツール統合
-- **セッション管理**: 会話履歴の永続化と管理
+- OpenAI 互換 API（OpenAI / OpenRouter / Azure OpenAI / Groq / Anthropic / その他）
+- Gemini
+- Skill（filesystem / shell / browser / search / http）
+- MCP 接続（stdio / HTTP）
+- YAML 設定
+- JSONL メモリ
+- セッション保存
+- トークン数・実行時間・コスト推定のメトリクス
+- ファイルログ出力
+
+## 前提条件
+
+- Rust 1.75 以降
+- `cargo` が利用可能であること
+- MCP stdio サーバーを使う場合は Node.js / npx などが必要な場合があります
 
 ## インストール
 
-### 前提条件
-
-- Rust 1.70以上
-- Cargo
-
-### ビルド
-
 ```bash
-git clone <repository-url>
-cd MyAgents
+git clone <repository>
+cd nami-cli
 cargo build --release
 ```
 
-バイナリは `target/release/nami` に生成されます。
+ビルドが完了すると、`target/release/nami-cli` が生成されます。
 
-### パス設定
+## 設定
 
-ビルドしたバイナリにパスを通して、どこからでも`nami`コマンドを使えるようにします：
+設定ファイルは `config/config.yaml` または `.nami/config/config.yaml` です。初回利用時に `nami init` を実行すると、実行ファイルがある場所に `.nami/` を作成し、雛形の設定ファイルや `.env`、`NAMI.md`、各種ディレクトリを生成します。
 
-```bash
-# 現在のディレクトリにシンボリックリンクを作成
-sudo ln -s $(pwd)/target/release/nami /usr/local/bin/nami
+設定ファイルの探索順序は以下の通りです。
 
-# または、 cargo bin ディレクトリにパスを追加
-echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
+1. `--config` / `-c` で指定されたパス
+2. カレントディレクトリの `.nami/config/config.yaml`
+3. カレントディレクトリの `config/*.yaml`
+4. 実行ファイルがある場所の `.nami/config/config.yaml`
 
-## クイックスタート
-
-### 1. プロジェクトの初期化
-
-新しいプロジェクトで以下を実行：
-
-```bash
-# カレントディレクトリを初期化
-nami init
-
-# または、特定のディレクトリを初期化
-nami init -p /path/to/project
-```
-
-これにより、以下の構成が作成されます：
-
-```
-.nami/
-├── agent.yaml          # エージェント設定
-├── mcp_setting.json    # MCPサーバー設定
-├── .env                # 環境変数（APIキー等）
-├── .env.sample         # 環境変数のテンプレート
-├── NAMI.md             # エージェントのルール
-├── skills/             # スキルディレクトリ
-│   └── sample/         # サンプルスキル
-├── sessions/           # セッション履歴
-├── cache/              # キャッシュ
-├── logs/               # ログ
-└── runtime/            # ランタイムデータ
-```
-
-### 2. 環境変数の設定
-
-```bash
-# .env.sampleをコピーして.envを作成
-cp .nami/.env.sample .nami/.env
-
-# エディタでAPIキーを設定
-nano .nami/.env
-```
-
-### 3. エージェントとの対話
-
-```bash
-nami chat "こんにちは"
-```
-
-### 2. 設定ファイルの編集
-
-`.nami/agent.yaml` を編集して、エージェントの動作をカスタマイズ：
+雛形は `config/config.yaml` または `nami init` で生成される `.nami/config/config.yaml` に同梱されています。
 
 ```yaml
-project:
-  name: my-project
+provider:
+  type: openrouter
+  model: gpt-4o-mini
+  # api_key: sk-...        # 直接記述するか、環境変数で指定
+  # base_url: https://...  # 省略時は provider 種別に応じたデフォルト URL
 
-model:
-  provider: openai        # openai, anthropic, google, openrouter, ollama, groq, azure-openai
-  model: gpt-4o-mini      # 使用するモデル名
-  api_key_env: OPENAI_API_KEY  # APIキーの環境変数名（オプション）
-  base_url: http://localhost:11434  # カスタムエンドポイント（オプション）
+temperature: 0.2
+max_tokens: 4000
+max_iterations: 10
+stream: false
+
+session:
+  save: true
+  directory: sessions
 
 system_prompt: |
-  あなたは親切なAIアシスタントです。
-  日本語で応答してください。
+  あなたは優秀なAIエージェントです。
+  日本語で応答すること。
 
 rules:
   - NAMI.md
-  - custom_rules.md
+
+memory:
+  directory: memory
+  file: memory/memory.jsonl
+
+logging:
+  directory: logs
+  level: info
 
 skills:
-  - sample
-
-mcp:
   - filesystem
-```
-
-### 3. エージェントとの対話
-
-```bash
-# 基本的なチャット
-./target/release/nami chat "こんにちは"
-
-# セッションを再開
-./target/release/nami chat --resume <session-id> "続きをお願い"
-
-# セッション一覧
-./target/release/nami session list
-
-# セッション詳細
-./target/release/nami session show <session-id>
-```
-
-## コマンドリファレンス
-
-### 基本オプション
-
-```bash
-nami [OPTIONS] <COMMAND>
-
-Options:
-  -c, --config <PATH>  カスタム設定ファイルのパスを指定
-  -h, --help           ヘルプを表示
-  -V, --version        バージョンを表示
-```
-
-### チャットコマンド
-
-```bash
-nami chat [OPTIONS] [MESSAGE]
-
-Arguments:
-  [MESSAGE]  エージェントに送信するメッセージ
-
-Options:
-      --resume <SESSION_ID>  既存セッションを再開
-```
-
-**使用例:**
-```bash
-# メッセージを指定して実行
-nami chat "今日の天気を教えて"
-
-# セッションを再開
-nami chat --resume abc123 "続きをお願い"
-
-# インタラクティブモード（メッセージなし）
-nami chat
-```
-
-### セッション管理
-
-```bash
-# セッション一覧
-nami session list
-
-# セッション詳細表示
-nami session show <SESSION_ID>
-
-# セッション削除
-nami session delete <SESSION_ID>
-```
-
-### スキル実行
-
-```bash
-nami skill run <NAME> [OPTIONS]
-
-Options:
-  -i, --input <INPUT>  JSON形式の入力（デフォルト: {}）
-```
-
-**使用例:**
-```bash
-nami skill run my-skill -i '{"query": "test"}'
-```
-
-### ワークフロー実行
-
-```bash
-nami workflow run <TASK>
-```
-
-**使用例:**
-```bash
-nami workflow run "README.mdを作成してください"
-```
-
-### プロジェクト初期化
-
-```bash
-# カレントディレクトリを初期化
-nami init
-
-# 特定のディレクトリを初期化
-nami init -p /path/to/project
-```
-
-**使用例:**
-```bash
-# 新しいプロジェクトを作成
-mkdir my-project && cd my-project
-nami init
-
-# 既存のプロジェクトを初期化
-cd existing-project
-nami init
-```
-
-### MCP管理
-
-```bash
-# MCPサーバー一覧
-nami mcp list
-```
-
-## 設定ファイル詳細
-
-### カスタム設定ファイルの使用
-
-デフォルトの `.nami/agent.yaml` の代わりに、任意の設定ファイルを使用できます：
-
-```bash
-nami --config /path/to/custom/agent.yaml chat "Hello"
-```
-
-### 設定項目
-
-#### project
-```yaml
-project:
-  name: my-project  # プロジェクト名（セッション管理で使用）
-```
-
-#### model
-```yaml
-model:
-  provider: openai           # LLMプロバイダー
-  model: gpt-4o-mini         # モデル名
-  api_key_env: OPENAI_API_KEY  # APIキーの環境変数名
-  base_url: http://...       # カスタムエンドポイント（オプション）
-```
-
-**対応プロバイダー:**
-- `openai` - OpenAI API
-- `anthropic` - Anthropic Claude
-- `google` / `gemini` - Google Gemini
-- `openrouter` - OpenRouter
-- `ollama` - ローカルのOllama
-- `groq` - Groq
-- `azure-openai` - Azure OpenAI
-
-#### system_prompt
-エージェントのシステムプロンプト。ファイルパスを指定することも可能：
-
-```yaml
-system_prompt: |
-  あなたは優秀なアシスタントです。
-
-# またはファイルから読み込み
-system_prompt: prompts/assistant.md
-```
-
-#### rules
-エージェントが従うべきルール。ファイルパスを指定：
-
-```yaml
-rules:
-  - NAMI.md
-  - coding_rules.md
-  - safety_guidelines.md
-```
-
-#### skills
-使用するスキルのリスト：
-
-```yaml
-skills:
-  - sample
-  - github
+  - shell
   - browser
+  - search
+  - http
+
+mcp:
+  servers:
+    - name: filesystem
+      transport: stdio
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      env: {}
 ```
 
-#### mcp
-Model Context Protocolサーバーの設定：
+### プロバイダー種別
 
-```yaml
-# 簡易形式（名前のみ）
-mcp:
-  - filesystem
-  - github
+`provider.type` に指定できる値は以下の通りです。
 
-# 詳細形式
-mcp:
-  filesystem:
-    transport: stdio
-    endpoint: npx @modelcontextprotocol/server-filesystem
-    timeout: 30
-  github:
-    transport: http
-    endpoint: http://localhost:8080
-```
-
-**トランスポートタイプ:**
-- `stdio` - 標準入出力（デフォルト）
-- `http` - HTTP接続
-- `websocket` - WebSocket接続
+| 値 | 説明 | デフォルト base_url |
+| --- | --- | --- |
+| `openai` | OpenAI | `https://api.openai.com/v1` |
+| `openrouter` | OpenRouter | `https://openrouter.ai/api/v1` |
+| `azure_openai` | Azure OpenAI Service | 必須（config で指定） |
+| `groq` | Groq | `https://api.groq.com/openai/v1` |
+| `anthropic` | Anthropic（OpenAI 互換エンドポイント経由） | `https://api.anthropic.com/v1` |
+| `gemini` | Google Gemini | `https://generativelanguage.googleapis.com/v1beta` |
+| `custom` | 任意の OpenAI 互換 API | `https://api.openai.com/v1` |
 
 ## 環境変数
 
-APIキーは環境変数、または `.env` ファイルで設定：
+YAML の設定に加え、以下の環境変数で上書きできます。
 
-### .envファイル
+| 環境変数 | 設定項目 |
+| --- | --- |
+| `NAMI_PROVIDER_TYPE` | `provider.type` |
+| `NAMI_PROVIDER_MODEL` | `provider.model` |
+| `NAMI_PROVIDER_API_KEY` | `provider.api_key` |
+| `NAMI_PROVIDER_BASE_URL` | `provider.base_url` |
+| `NAMI_TEMPERATURE` | `temperature` |
+| `NAMI_MAX_TOKENS` | `max_tokens` |
+| `NAMI_MAX_ITERATIONS` | `max_iterations` |
+| `NAMI_STREAM` | `stream` |
 
-プロジェクトルートまたは `.nami/.env` に配置：
+また、プロバイダー固有の API キーは以下の環境変数からも読み込まれます。
 
-```bash
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-OPENROUTER_API_KEY=sk-or-...
-```
+- `OPENAI_API_KEY`
+- `OPENROUTER_API_KEY`
+- `GROQ_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `AZURE_OPENAI_API_KEY`
+- `GOOGLE_GENERATIVE_AI_API_KEY`
 
-### 環境変数の優先順位
+## 実行例
 
-1. システム環境変数
-2. `.env` ファイルの値
-
-## スキルシステム
-
-スキルは `.nami/skills/<skill-name>/SKILL.md` に定義：
-
-```
-.nami/
-└── skills/
-    └── sample/
-        └── SKILL.md
-```
-
-### SKILL.md の形式
-
-```markdown
----
-name: Custom Skill Name
-description: スキルの説明
-version: 1.0.0
-tools:
-  - tool1
-  - tool2
----
-
-# スキルの本文
-
-スキルの詳細な説明と使用方法。
-```
-
-## セッション管理
-
-セッションは `.nami/sessions/` に保存：
-
-```
-.nami/
-└── sessions/
-    └── <session-id>/
-        ├── metadata.json
-        └── messages.jsonl
-```
-
-### セッションの永続化
-
-- 自動的に会話履歴が保存
-- `--resume` で過去のセッションを再開
-- セッションIDで管理
-
-## ワークフロー
-
-ワークフローは複数のエージェントを連携させてタスクを実行：
+### 通常実行
 
 ```bash
-nami workflow run "複雑なタスクの説明"
+# 設定ファイルのデフォルトを使用
+cargo run --release -- "こんにちは"
+
+# 設定ファイルを指定
+cargo run --release -- -c config/myconfig.yaml "RustでFizzBuzzを書いて"
+
+# セッションを保存しない
+cargo run --release -- --no-session "今日の天気を調べて"
 ```
 
-ワークフローは自動的に：
-1. プランナーエージェントがタスクを分解
-2. コーダーエージェントが実装
-3. レビュアーエージェントが検証
+### API キーを環境変数で渡す例
 
-## トラブルシューティング
-
-### APIキーエラー
-
-```
-error: missing required environment variable OPENAI_API_KEY
-```
-
-**解決策:**
 ```bash
-# .envファイルを作成
-echo "OPENAI_API_KEY=sk-..." > .nami/.env
-
-# または環境変数を設定
-export OPENAI_API_KEY=sk-...
+export OPENROUTER_API_KEY="sk-or-..."
+cargo run --release -- "Rustの学習ロードマップを教えて"
 ```
 
-### 設定ファイルが見つからない
+### Gemini を使う例
 
-```
-warning: failed to read agent.yaml
-```
-
-**解決策:**
-- パスが正しいか確認
-- ファイルの権限を確認
-- YAMLの構文エラーがないか確認
-
-### モデルが見つからない
-
-```
-error: unsupported provider 'xxx'
+```bash
+export GOOGLE_GENERATIVE_AI_API_KEY="..."
+cargo run --release -- -c config/gemini.yaml "こんにちは"
 ```
 
-**解決策:**
-- `model.provider` の値を確認
-- 対応プロバイダー一覧を参照
+`config/gemini.yaml` の例:
+
+```yaml
+provider:
+  type: gemini
+  model: gemini-1.5-flash
+
+temperature: 0.2
+max_tokens: 4000
+max_iterations: 10
+```
+
+### ストリーミングを有効にする
+
+```yaml
+stream: true
+```
+
+OpenAI 互換 Provider で `stream: true` にすると、SSE 経由でレスポンスを受信し、その内容をリアルタイムにターミナル上に表示します。対応する Provider ではストリーム終了時に `usage` も取得でき、途中の tool_call や thinking / reasoning も表示されます。
+
+### 過去セッションを再開する
+
+```bash
+# セッション ID で再開
+cargo run --release -- --resume 2026-06-27_21-15-02 "続きをお願い"
+
+# パスを直接指定
+cargo run --release -- --resume sessions/2026-06-27_21-15-02.json "続きをお願い"
+```
+
+## Skill 一覧
+
+`config.yaml` の `skills` で有効化できます。
+
+| Skill | 説明 |
+| --- | --- |
+| `filesystem` | ファイル・ディレクトリの読み書き・一覧（`operation`: `list` / `read` / `write`） |
+| `shell` | シェルコマンド実行 |
+| `browser` | 指定 URL の HTML を取得 |
+| `search` | DuckDuckGo lite で Web 検索 |
+| `http` | GET / POST / PUT / DELETE リクエスト送信 |
+
+## MCP 接続
+
+`mcp.servers` に接続先を追加すると、Skill と同じようにツールとして利用できます。
+
+### stdio
+
+```yaml
+mcp:
+  servers:
+    - name: filesystem
+      transport: stdio
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+      env: {}
+```
+
+### HTTP（Streamable HTTP）
+
+```yaml
+mcp:
+  servers:
+    - name: github
+      transport: http
+      url: http://localhost:3001/mcp
+```
+
+MCP ツールと Skill で名前が衝突した場合、Skill が優先されます。
+
+## 出力されるファイル
+
+```
+project/
+├── config/
+│   └── config.yaml
+├── memory/
+│   └── memory.jsonl        # 1行1メッセージで追記
+├── sessions/
+│   └── 2026-06-27_21-15-02.json
+└── logs/
+    └── nami-cli.log        # 日別ローテーション
+```
+
+## ログの確認
+
+標準出力と `logs/nami-cli.log` の両方に以下が出力されます。
+
+- ユーザー入力プロンプト
+- LLM レスポンスとトークン使用量
+- Tool / MCP 呼び出し
+- エラー
+- 実行時間・反復回数
+
+## セッションの保存
+
+`session.save: true` の場合、実行結果は `sessions/YYYY-MM-DD_HH-MM-SS.json` に保存されます。保存内容には以下が含まれます。
+
+- 実行時の設定
+- メッセージ履歴
+- メトリクス
+- Tool / MCP 呼び出し履歴
+- エラー
 
 ## 開発
 
-### テスト実行
-
 ```bash
+# コンパイル確認
+cargo check
+
+# テスト実行
 cargo test
+
+# フォーマット
+cargo fmt
+
+# Clippy
+cargo clippy
 ```
 
-### ビルド
+## 注意事項
 
-```bash
-cargo build          # デバッグビルド
-cargo build --release  # リリースビルド
-```
-
-### クリーン
-
-```bash
-cargo clean
-```
-
-## アーキテクチャ
-
-```
-nami/
-├── src/
-│   ├── main.rs          # エントリーポイント、CLI
-│   ├── config.rs        # 設定管理
-│   ├── runtime.rs       # ランタイム（AutoAgents/Deterministic）
-│   ├── session.rs       # セッション管理
-│   ├── skill.rs         # スキルシステム
-│   ├── workflow.rs      # ワークフロー実行
-│   ├── mcp.rs           # MCP統合
-│   └── event.rs         # イベント記録
-├── .nami/
-│   ├── agent.yaml       # エージェント設定
-│   ├── mcp_setting.json # MCP設定
-│   ├── .env             # 環境変数
-│   ├── skills/          # スキル定義
-│   └── sessions/        # セッション履歴
-└── Cargo.toml
-```
+- `shell` Skill は指定されたコマンドをそのまま実行します。信頼できない入力に対しては注意してください。
+- API キーは環境変数で渡すことを推奨します。`config.yaml` に直接記述する場合は、ファイルを誤ってコミットしないようにしてください。
 
 ## ライセンス
 
 MIT
-
-## 貢献
-
-プルリクエストを歓迎します。
-
-## サポート
-
-問題や質問は、GitHub Issuesまでお願いします。

@@ -107,6 +107,8 @@ impl Agent {
         let tools = self.tool_router.list_tools().await;
         let mut last_answer: Option<String> = None;
 
+        let actually_streaming = cfg.stream && self.provider.supports_streaming();
+
         for _i in 0..cfg.max_iterations {
             self.metrics.record_iteration();
             let req = self.planner.build_request(
@@ -142,8 +144,8 @@ impl Agent {
             let assistant_msg = choice.map(|c| c.message).unwrap_or(Message::assistant(None, None));
             messages.push(assistant_msg.clone());
 
-            // 非ストリーミング時は reasoning / thinking 内容を表示する
-            if !cfg.stream {
+            // ストリーミング表示が行われない場合は reasoning / thinking 内容を表示する
+            if !actually_streaming {
                 if let Some(ref rc) = assistant_msg.reasoning_content {
                     if !rc.is_empty() {
                         print!("\n<thinking>\n{}\n</thinking>\n", rc);
@@ -170,11 +172,12 @@ impl Agent {
                 .map(|call| async move { router.execute(call).await })
                 .collect();
 
-            // 非ストリーミング時は実行する tool_call を表示する
-            if !cfg.stream {
+            // ストリーミング表示が行われない場合は実行する tool_call を表示する
+            if !actually_streaming {
                 print!("\n");
                 for call in &tool_calls {
-                    print!("[tool_call: {}] {}\n", call.name, call.arguments);
+                    let args_pretty = serde_json::to_string_pretty(&call.arguments).unwrap_or_else(|_| call.arguments.to_string());
+                    print!("[tool_call: {}] {}\n", call.name, args_pretty);
                 }
                 let _ = std::io::stdout().flush();
             }
@@ -196,8 +199,17 @@ impl Agent {
                         } else {
                             self.metrics.record_tool_call();
                         }
+                        if !actually_streaming {
+                            let content_pretty = if let Ok(value) = serde_json::from_str::<serde_json::Value>(&tool_result.content) {
+                                serde_json::to_string_pretty(&value).unwrap_or_else(|_| tool_result.content.clone())
+                            } else {
+                                tool_result.content.clone()
+                            };
+                            println!("[tool_result: {}] {}", tool_result.name, content_pretty);
+                        }
                         messages.push(Message::tool_result(
                             tool_result.tool_call_id.clone(),
+                            tool_result.name.clone(),
                             tool_result.content.clone(),
                         ));
                     }
@@ -205,6 +217,7 @@ impl Agent {
                         has_error = true;
                         messages.push(Message::tool_result(
                             call.id.clone(),
+                            call.name.clone(),
                             format!("error: {}", e),
                         ));
                     }

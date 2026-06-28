@@ -15,6 +15,12 @@ pub enum ProviderError {
 pub trait LlmProvider: Send + Sync {
     async fn chat(&self, request: crate::models::chat::ChatRequest)
         -> Result<ChatResponse, ProviderError>;
+
+    /// このプロバイダーがターミナルへのストリーミング表示に対応しているか。
+    /// 未対応の場合、main.rs は集約された answer を改行後に表示する。
+    fn supports_streaming(&self) -> bool {
+        true
+    }
 }
 
 pub use openai::OpenAICompatibleProvider;

@@ -1,6 +1,6 @@
 [package]
 name = "nami"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["soashi"]
 description = "Rust-only lightweight CLI AI agent framework"

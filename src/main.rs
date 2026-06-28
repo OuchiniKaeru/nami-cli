@@ -161,9 +161,11 @@ async fn main() -> anyhow::Result<()> {
 
     let answer = agent.run(&prompt).await?;
 
-    if cfg.stream {
+    // Gemini 等、ストリーミング未対応プロバイダーの場合は集約された応答を表示する。
+    let actually_streamed = cfg.stream && agent.provider.supports_streaming();
+    if actually_streamed {
         // ストリーミング中に既にレスポンス内容は表示されている
-        println!();
+        print!("\n");
     } else if let Some(text) = answer {
         println!("\n{}", text);
     }

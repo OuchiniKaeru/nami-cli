@@ -241,6 +241,7 @@ impl Agent {
             session.messages = messages.clone();
             session.metrics = self.metrics.clone();
             session.updated_at = chrono::Utc::now().to_rfc3339();
+            session.derive_title();
             let _ = session.save();
         }
 

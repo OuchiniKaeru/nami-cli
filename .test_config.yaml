@@ -1,0 +1,21 @@
+provider:
+  type: openrouter
+  model: test-model
+temperature: 0.2
+max_tokens: 4000
+max_iterations: 10
+stream: false
+session:
+  save: true
+  directory: .test_sessions
+memory:
+  directory: .test_memory
+  file: .test_memory/memory.jsonl
+logging:
+  directory: .test_logs
+  level: info
+skills: []
+mcp:
+  servers: []
+system_prompt: ""
+rules: []

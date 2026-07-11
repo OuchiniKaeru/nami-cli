@@ -6,7 +6,28 @@ use nami::mcp::McpClient;
 use nami::session::SessionRecord;
 use nami::skill::SkillRegistry;
 use nami::utils::logger::init as init_logger;
+use serde::Serialize;
 use std::path::PathBuf;
+
+#[derive(Debug, Serialize)]
+struct SessionSummary {
+    id: String,
+    title: String,
+    created_at: String,
+    updated_at: String,
+    message_count: usize,
+    provider: String,
+    model: String,
+    stream: bool,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    tool_calls: u32,
+    mcp_calls: u32,
+    error_count: usize,
+    path: String,
+    size_bytes: u64,
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -16,6 +37,77 @@ async fn main() -> anyhow::Result<()> {
         .subcommand(
             Command::new("init")
                 .about("Initialize a nami project in the executable directory"),
+        )
+        .subcommand(
+            Command::new("session")
+                .about("Manage sessions")
+                .subcommand(
+                    Command::new("list")
+                        .about("List sessions")
+                        .arg(
+                            Arg::new("json")
+                                .long("json")
+                                .action(clap::ArgAction::SetTrue),
+                        ),
+                )
+                .subcommand(
+                    Command::new("show")
+                        .about("Show session details")
+                        .arg(
+                            Arg::new("id")
+                                .required(true)
+                                .index(1)
+                                .value_name("SESSION_ID"),
+                        )
+                        .arg(
+                            Arg::new("json")
+                                .long("json")
+                                .action(clap::ArgAction::SetTrue),
+                        ),
+                )
+                .subcommand(
+                    Command::new("delete")
+                        .about("Delete a session")
+                        .arg(
+                            Arg::new("id")
+                                .required(true)
+                                .index(1)
+                                .value_name("SESSION_ID"),
+                        ),
+                )
+                .subcommand(
+                    Command::new("rename")
+                        .about("Rename a session")
+                        .arg(
+                            Arg::new("id")
+                                .required(true)
+                                .index(1)
+                                .value_name("SESSION_ID"),
+                        )
+                        .arg(
+                            Arg::new("title")
+                                .required(true)
+                                .index(2)
+                                .value_name("TITLE"),
+                        ),
+                )
+                .subcommand(
+                    Command::new("export")
+                        .about("Export a session")
+                        .arg(
+                            Arg::new("id")
+                                .required(true)
+                                .index(1)
+                                .value_name("SESSION_ID"),
+                        )
+                        .arg(
+                            Arg::new("format")
+                                .required(true)
+                                .index(2)
+                                .value_name("FORMAT")
+                                .help("markdown"),
+                        ),
+                ),
         )
         .arg(
             Arg::new("config")
@@ -39,6 +131,10 @@ async fn main() -> anyhow::Result<()> {
                 .value_name("SESSION"),
         )
         .get_matches();
+
+    if let Some(session_cmd) = matches.subcommand_matches("session") {
+        return run_session_command(session_cmd, &matches);
+    }
 
     if let Some(_init) = matches.subcommand_matches("init") {
         let exe_dir = nami::config::current_exe_dir()?;
@@ -197,6 +293,214 @@ async fn main() -> anyhow::Result<()> {
         .map(|s| s.id.as_str())
         .unwrap_or("none");
     println!("Session ID      : {}", session_id);
+
+    Ok(())
+}
+
+fn run_session_command(
+    matches: &clap::ArgMatches,
+    root_matches: &clap::ArgMatches,
+) -> anyhow::Result<()> {
+    let config_path = resolve_config_path(root_matches)?;
+    let cfg = load(Some(config_path.to_str().unwrap()))?;
+
+    if let Some(list_matches) = matches.subcommand_matches("list") {
+        cmd_list(cfg, list_matches)
+    } else if let Some(show_matches) = matches.subcommand_matches("show") {
+        cmd_show(cfg, show_matches)
+    } else if let Some(delete_matches) = matches.subcommand_matches("delete") {
+        cmd_delete(cfg, delete_matches)
+    } else if let Some(rename_matches) = matches.subcommand_matches("rename") {
+        cmd_rename(cfg, rename_matches)
+    } else if let Some(export_matches) = matches.subcommand_matches("export") {
+        cmd_export(cfg, export_matches)
+    } else {
+        anyhow::bail!("unknown session command")
+    }
+}
+
+fn cmd_list(cfg: nami::models::config::AppConfig, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+    let json = matches.get_flag("json");
+    let dir = std::path::Path::new(&cfg.session.directory);
+    if !dir.exists() {
+        if json {
+            println!("[]");
+        }
+        return Ok(());
+    }
+
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .context("failed to read session directory")?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|e| e == "json").unwrap_or_default())
+        .collect();
+
+    entries.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+    entries.reverse();
+
+    let mut summaries = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        let meta = entry.metadata().context("failed to read session metadata")?;
+        let mut record = match SessionRecord::load(&path) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        record.derive_title();
+
+        let usage = record.metrics.usage;
+        summaries.push(SessionSummary {
+            id: record.id,
+            title: record.title,
+            created_at: record.created_at,
+            updated_at: record.updated_at,
+            message_count: record.messages.len(),
+            provider: format!("{}", record.config.provider.kind),
+            model: record.config.provider.model,
+            stream: record.config.stream,
+            input_tokens: usage.as_ref().map(|u| u.input_tokens),
+            output_tokens: usage.as_ref().map(|u| u.output_tokens),
+            total_tokens: usage.as_ref().map(|u| u.total_tokens),
+            tool_calls: record.metrics.tool_calls,
+            mcp_calls: record.metrics.mcp_calls,
+            error_count: record.errors.len(),
+            path: path.to_string_lossy().into_owned(),
+            size_bytes: meta.len(),
+        });
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&summaries)?);
+    } else {
+        for s in &summaries {
+            println!("{}", s.id);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_show(cfg: nami::models::config::AppConfig, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+    let json = matches.get_flag("json");
+    let id = matches.get_one::<String>("id").unwrap();
+    let path = SessionRecord::path(&cfg.session.directory, id);
+    let mut record = SessionRecord::load(&path)?;
+    record.derive_title();
+
+    if json {
+        let mut redacted = record.clone();
+        redacted.config.provider.api_key = None;
+        println!("{}", serde_json::to_string_pretty(&redacted)?);
+    } else {
+        println!("ID: {}", record.id);
+        println!("Title: {}", record.title);
+        println!("Provider: {}", record.config.provider.kind);
+        println!("Model: {}", record.config.provider.model);
+        println!("Stream: {}", record.config.stream);
+        if let Some(u) = &record.metrics.usage {
+            println!("Input Tokens: {}", u.input_tokens);
+            println!("Output Tokens: {}", u.output_tokens);
+            println!("Total Tokens: {}", u.total_tokens);
+        }
+        println!("Tool Calls: {}", record.metrics.tool_calls);
+        println!("MCP Calls: {}", record.metrics.mcp_calls);
+        println!("Errors: {}", record.errors.len());
+        println!("Messages:");
+        for (i, msg) in record.messages.iter().enumerate() {
+            println!(
+                "  [{}] {:?}: {}",
+                i,
+                msg.role,
+                msg.content.as_deref().unwrap_or("")
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_delete(cfg: nami::models::config::AppConfig, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+    let id = matches.get_one::<String>("id").unwrap();
+    let path = SessionRecord::path(&cfg.session.directory, id);
+    std::fs::remove_file(&path)?;
+    println!("deleted: {}", id);
+    Ok(())
+}
+
+fn cmd_rename(cfg: nami::models::config::AppConfig, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+    let id = matches.get_one::<String>("id").unwrap();
+    let title = matches.get_one::<String>("title").unwrap();
+    let path = SessionRecord::path(&cfg.session.directory, id);
+    let mut record = SessionRecord::load(&path)?;
+    record.title = title.clone();
+    record.save()?;
+    println!("renamed: {} -> {}", id, title);
+    Ok(())
+}
+
+fn cmd_export(cfg: nami::models::config::AppConfig, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+    let id = matches.get_one::<String>("id").unwrap();
+    let format = matches.get_one::<String>("format").unwrap();
+    let path = SessionRecord::path(&cfg.session.directory, id);
+    let record = SessionRecord::load(&path)?;
+
+    match format.as_str() {
+        "markdown" => export_markdown(&record),
+        other => anyhow::bail!("unsupported format: {}", other),
+    }
+}
+
+fn export_markdown(record: &SessionRecord) -> anyhow::Result<()> {
+    println!("# {}", record.title);
+    println!("");
+    println!("Session ID: {}", record.id);
+    println!("Provider: {}", record.config.provider.kind);
+    println!("Model: {}", record.config.provider.model);
+    println!("Stream: {}", record.config.stream);
+    println!("Created: {}", record.created_at);
+    if let Some(u) = &record.metrics.usage {
+        println!("Input Tokens: {}", u.input_tokens);
+        println!("Output Tokens: {}", u.output_tokens);
+        println!("Total Tokens: {}", u.total_tokens);
+    }
+    println!("");
+    println!("---");
+    println!("");
+
+    for msg in &record.messages {
+        match msg.role {
+            nami::models::message::Role::System => {
+                println!("**[System]**");
+                if let Some(c) = &msg.content {
+                    println!("{}", c);
+                }
+            }
+            nami::models::message::Role::User => {
+                println!("**[User]**");
+                if let Some(c) = &msg.content {
+                    println!("{}", c);
+                }
+            }
+            nami::models::message::Role::Assistant => {
+                println!("**[Assistant]**");
+                if let Some(c) = &msg.content {
+                    println!("{}", c);
+                }
+                if let Some(rc) = &msg.reasoning_content {
+                    if !rc.is_empty() {
+                        println!("<thinking>\n{}\n</thinking>", rc);
+                    }
+                }
+            }
+            nami::models::message::Role::Tool => {
+                println!("**[Tool: {}]**", msg.name.as_deref().unwrap_or(""));
+                if let Some(c) = &msg.content {
+                    println!("{}", c);
+                }
+            }
+        }
+        println!("");
+    }
 
     Ok(())
 }

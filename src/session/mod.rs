@@ -15,6 +15,8 @@ pub struct SessionRecord {
     pub tool_calls: Vec<crate::models::tool::ToolCall>,
     pub mcp_calls: Vec<crate::models::tool::ToolCall>,
     pub errors: Vec<String>,
+    #[serde(default)]
+    pub title: String,
 }
 
 impl SessionRecord {
@@ -31,7 +33,24 @@ impl SessionRecord {
             tool_calls: Vec::new(),
             mcp_calls: Vec::new(),
             errors: Vec::new(),
+            title: String::new(),
         }
+    }
+
+    pub fn derive_title(&mut self) {
+        if !self.title.is_empty() {
+            return;
+        }
+        let Some(first) = self
+            .messages
+            .iter()
+            .find(|m| matches!(m.role, crate::models::message::Role::User))
+        else {
+            return;
+        };
+        let raw = first.content.as_deref().unwrap_or("");
+        let title = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        self.title = title.chars().take(200).collect();
     }
 
     pub fn path(directory: &str, id: &str) -> PathBuf {

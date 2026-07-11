@@ -772,6 +772,33 @@ Session ID      : 2026-06-27_12-34-56
 
 セッション保存が無効（`--no-session` または `session.save: false`）の場合は `none` を出力する。
 
+## 24. セッション管理コマンド
+
+`nami session ...` でセッションの参照・変更・削除・エクスポートを行う。
+
+```bash
+nami session list --json
+nami session show <session_id> --json
+nami session delete <session_id>
+nami session rename <session_id> <タイトル>
+nami session export <session_id> markdown
+```
+
+### タイトル
+
+- セッション JSON に `"title"` を保存する。
+- 未設定時は自動生成：先頭 user メッセージの先頭 200 文字（collapse whitespace 後）。
+- 保存済み title がある場合は再生成しない。
+- `rename` で明示的に上書きできる。
+
+### list --json の返却項目
+
+- `id`, `title`, `created_at`, `updated_at`, `message_count`
+- `provider`, `model`, `stream`
+- `input_tokens`, `output_tokens`, `total_tokens`
+- `tool_calls`, `mcp_calls`, `error_count`
+- `path`, `size_bytes`
+
 ## 25. ターミナルでのストリーミング表示
 
 `config.yaml` の `stream: true`（または環境変数 `NAMI_STREAM=true`）の場合、OpenAI 互換 Provider は SSE ストリームを受信しつつ、到着した内容をリアルタイムでターミナルに表示する（`stdout`）。

@@ -52,7 +52,7 @@ nami init
 provider:
   type: openrouter
   model: gpt-4o-mini
-  # api_key: OPENROUTER_API_KEY      # 環境変数で指定
+  api_key: OPENROUTER_API_KEY      # 環境変数で指定
   # base_url: https://...  # 省略時は provider 種別に応じたデフォルト URL
 
 temperature: 0.2
@@ -265,6 +265,28 @@ project/
 - メトリクス
 - Tool / MCP 呼び出し履歴
 - エラー
+- タイトル（先頭 user メッセージから自動生成、未設定時は最大先頭 200 文字）
+
+## セッション管理コマンド
+
+`nami session` でセッションの管理ができます。
+
+```bash
+# セッション一覧（JSON）
+nami session list --json
+
+# セッション詳細（JSON）
+nami session show <session_id> --json
+
+# セッション削除
+nami session delete <session_id>
+
+# セッション名変更
+nami session rename <session_id> <タイトル>
+
+# セッションを Markdown でエクスポート
+nami session export <session_id> markdown
+```
 
 ## 開発
 

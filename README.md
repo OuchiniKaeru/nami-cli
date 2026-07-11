@@ -14,6 +14,8 @@ OpenAI 互換 API と Gemini に対応し、Skill（ローカル機能）と MCP
 - セッション保存
 - トークン数・実行時間・コスト推定のメトリクス
 - ファイルログ出力
++- Gemini マルチモーダル対応（画像、PDF、音声、動画の添付に対応）
++- ファイル添付（`@画像パス` / `file://` / ファイルパス直接指定）
 
 ## 前提条件
 
@@ -172,6 +174,21 @@ provider:
 temperature: 0.2
 max_tokens: 4000
 max_iterations: 10
+```
+
+### ファイル添付
+
+画像やPDFなどを添付して送信できます。
+
+```bash
+# @パスで添付
+nami "@/home/soashi/Documents/nami-cli-exe/26869098_s.jpg この画像には何が写っていますか？"
+
+# file:// で添付
+nami "file:///home/soashi/Documents/nami-cli-exe/26869098_s.jpg 説明してください"
+
+# ファイルパスを直接指定
+nami "/home/soashi/Documents/nami-cli-exe/26869098_s.jpg 説明してください"
 ```
 
 ### ストリーミングを有効にする

@@ -381,7 +381,67 @@ fn openai_message(msg: &crate::models::Message) -> serde_json::Value {
         value["name"] = serde_json::Value::String(msg.name.clone().unwrap_or_default());
     }
 
+    if !msg.attachments.is_empty() {
+        let mut content_parts: Vec<serde_json::Value> = Vec::new();
+        if let Some(text) = &msg.content {
+            if !text.is_empty() {
+                content_parts.push(serde_json::json!({ "type": "text", "text": text }));
+            }
+        }
+        for attachment in &msg.attachments {
+            if !is_supported_vision_attachment(attachment) {
+                continue;
+            }
+            match &attachment.payload {
+                crate::models::AttachmentPayload::Path { path } => {
+                    if let Ok(bytes) = std::fs::read(path) {
+                        let data_uri = format!(
+                            "data:{};base64,{}",
+                            attachment.mime,
+                            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+                        );
+                        content_parts.push(serde_json::json!({
+                            "type": "image_url",
+                            "image_url": { "url": data_uri }
+                        }));
+                    }
+                }
+                crate::models::AttachmentPayload::Url { url } => {
+                    content_parts.push(serde_json::json!({
+                        "type": "image_url",
+                        "image_url": { "url": url }
+                    }));
+                }
+                crate::models::AttachmentPayload::Bytes { data } => {
+                    let data_uri = format!(
+                        "data:{};base64,{}",
+                        attachment.mime,
+                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, data)
+                    );
+                    content_parts.push(serde_json::json!({
+                        "type": "image_url",
+                        "image_url": { "url": data_uri }
+                    }));
+                }
+            }
+        }
+
+        if !content_parts.is_empty() {
+            value["content"] = serde_json::Value::Array(content_parts);
+        }
+    }
+
     value
+}
+
+fn is_supported_vision_attachment(attachment: &crate::models::Attachment) -> bool {
+    matches!(
+        attachment.attachment_type,
+        crate::models::AttachmentType::Image
+            | crate::models::AttachmentType::Pdf
+            | crate::models::AttachmentType::Audio
+            | crate::models::AttachmentType::Video
+    )
 }
 
 fn openai_tool_call(tc: &crate::models::tool::ToolCall) -> serde_json::Value {
@@ -441,6 +501,7 @@ mod tests {
                 arguments: serde_json::json!({ "command": "echo hi" }),
             }]),
             reasoning_content: None,
+            attachments: Vec::new(),
         };
         let json = openai_message(&msg);
         let calls = json["tool_calls"].as_array().unwrap();

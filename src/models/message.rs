@@ -37,6 +37,8 @@ pub struct Message {
         alias = "thinking"
     )]
     pub reasoning_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::models::Attachment>,
 }
 
 impl Message {
@@ -48,10 +50,18 @@ impl Message {
             name: None,
             tool_calls: None,
             reasoning_content: None,
+            attachments: Vec::new(),
         }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
+        Self::user_with_attachments(content, Vec::new())
+    }
+
+    pub fn user_with_attachments(
+        content: impl Into<String>,
+        attachments: Vec<crate::models::Attachment>,
+    ) -> Self {
         Self {
             role: Role::User,
             content: Some(content.into()),
@@ -59,6 +69,7 @@ impl Message {
             name: None,
             tool_calls: None,
             reasoning_content: None,
+            attachments,
         }
     }
 
@@ -73,6 +84,7 @@ impl Message {
             name: None,
             tool_calls,
             reasoning_content: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -88,6 +100,7 @@ impl Message {
             name: Some(name.into()),
             tool_calls: None,
             reasoning_content: None,
+            attachments: Vec::new(),
         }
     }
 }

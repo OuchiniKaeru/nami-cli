@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 
+#[derive(Debug)]
 pub struct McpConnection {
     pub name: String,
     pub running: RunningService<RoleClient, ClientInfo>,
@@ -27,6 +28,7 @@ impl McpConnection {
 
 /// MCP クライアント。
 /// 接続された各サーバーのツール一覧を取得し、ツール名から対象サーバー名を引けるようにする。
+#[derive(Debug)]
 pub struct McpClient {
     pub connections: RwLock<Vec<McpConnection>>,
     /// ツール名 → サーバー名 のインデックス。
@@ -84,6 +86,27 @@ impl McpClient {
 
         self.connections.write().await.push(McpConnection { name, running });
         Ok(())
+    }
+
+    pub async fn connect_one(
+        &self,
+        server: &crate::models::config::McpServer,
+    ) -> anyhow::Result<()> {
+        match server.transport {
+            crate::models::config::McpTransport::Stdio => {
+                let command = server.command.as_deref().unwrap_or_default();
+                let args = server.args.as_deref().unwrap_or_default();
+                self.connect_stdio(&server.name, command, args, server.env.clone())
+                    .await
+            }
+            crate::models::config::McpTransport::Http => {
+                let url = server
+                    .url
+                    .as_deref()
+                    .context("http transport requires url")?;
+                self.connect_http(&server.name, url).await
+            }
+        }
     }
 
     /// 接続されているすべての MCP サーバーからツール一覧を取得する。

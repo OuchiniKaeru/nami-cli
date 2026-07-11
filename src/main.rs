@@ -1,5 +1,6 @@
 use anyhow::Context;
 use clap::{Arg, Command};
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use nami::agent::Agent;
 use nami::config::load;
 use nami::mcp::McpClient;
@@ -130,6 +131,13 @@ async fn main() -> anyhow::Result<()> {
                 .help("Resume from a previous session file or id")
                 .value_name("SESSION"),
         )
+        .arg(
+            Arg::new("attach")
+                .long("attach")
+                .help("Attach files to the prompt (repeatable, supports directories)")
+                .value_name("PATH")
+                .action(clap::ArgAction::Append),
+        )
         .get_matches();
 
     if let Some(session_cmd) = matches.subcommand_matches("session") {
@@ -218,20 +226,35 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let mcp = McpClient::new();
+    let mut tasks = FuturesUnordered::new();
 
     for server in &cfg.mcp.servers {
-        match server.transport {
-            nami::models::config::McpTransport::Stdio => {
-                let command = server.command.as_deref().unwrap_or_default();
-                let args = server.args.as_deref().unwrap_or_default();
-                mcp.connect_stdio(&server.name, command, args, server.env.clone()).await?;
+        let mcp = &mcp;
+        let server = server.clone();
+        tasks.push(async move {
+            match server.transport {
+                nami::models::config::McpTransport::Stdio => {
+                    let command = server.command.as_deref().unwrap_or_default();
+                    let args = server.args.as_deref().unwrap_or_default();
+                    mcp.connect_stdio(&server.name, command, args, server.env.clone())
+                        .await?;
+                }
+                nami::models::config::McpTransport::Http => {
+                    let url = server
+                        .url
+                        .as_deref()
+                        .context("http transport requires url")?;
+                    mcp.connect_http(&server.name, url).await?;
+                }
             }
-            nami::models::config::McpTransport::Http => {
-                let url = server.url.as_deref().context("http transport requires url")?;
-                mcp.connect_http(&server.name, url).await?;
-            }
-        }
+            Ok::<_, anyhow::Error>(())
+        });
     }
+
+    while let Some(result) = tasks.next().await {
+        result?;
+    }
+    drop(tasks);
 
     let mut agent = Agent::new(cfg.clone(), registry, mcp).await?;
 
@@ -252,10 +275,50 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
+    let raw_attachments: Vec<String> = matches
+        .get_many::<String>("attach")
+        .map(|vals| vals.cloned().collect())
+        .unwrap_or_default();
+    let mut attachments: Vec<nami::models::Attachment> = Vec::new();
+    for value in raw_attachments {
+        let expanded = expand_attach_value(&value);
+        if std::path::Path::new(&expanded).is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(&expanded)
+                .context("failed to read attach directory")?
+                .filter_map(|e| e.ok())
+                .collect();
+            entries.sort_by_key(|e| e.path());
+            for entry in entries {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(attachment) = nami::agent::prompt_parser::build_local_attachment(
+                        path.to_string_lossy().as_ref(),
+                    ) {
+                        attachments.push(attachment);
+                    }
+                }
+            }
+        } else {
+            for part in expanded.split(',') {
+                let trimmed = part.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                for candidate in expand_glob(trimmed) {
+                    if let Some(attachment) =
+                        nami::agent::prompt_parser::build_local_attachment(&candidate)
+                    {
+                        attachments.push(attachment);
+                    }
+                }
+            }
+        }
+    }
+
     println!("Running with provider: {}", cfg.provider.kind);
     println!("Model: {}\n", cfg.provider.model);
 
-    let answer = agent.run(&prompt).await?;
+    let answer = agent.run(&prompt, attachments).await?;
 
     // Gemini 等、ストリーミング未対応プロバイダーの場合は集約された応答を表示する。
     let actually_streamed = cfg.stream && agent.provider.supports_streaming();
@@ -570,4 +633,32 @@ fn resolve_session_path(resume: &str, cfg: &nami::models::config::AppConfig) -> 
     } else {
         SessionRecord::path(&cfg.session.directory, resume)
     }
+}
+
+fn expand_attach_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.starts_with('~') {
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            let suffix = trimmed.strip_prefix("~/").unwrap_or(trimmed);
+            let expanded = std::path::PathBuf::from(home).join(suffix);
+            return expanded.to_string_lossy().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn expand_glob(pattern: &str) -> Vec<String> {
+    let mut matches = Vec::new();
+    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        if let Ok(glob_matches) = glob::glob(pattern) {
+            for entry in glob_matches {
+                if let Ok(path) = entry {
+                    matches.push(path.to_string_lossy().to_string());
+                }
+            }
+        }
+    } else {
+        matches.push(pattern.to_string());
+    }
+    matches
 }

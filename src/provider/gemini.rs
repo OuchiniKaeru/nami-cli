@@ -47,6 +47,45 @@ impl GeminiProvider {
         serde_json::json!([{ "type": "text", "text": text }])
     }
 
+    fn attachment_type_label(attachment: &crate::models::Attachment) -> &'static str {
+        use crate::models::AttachmentType::*;
+        match attachment.attachment_type {
+            Image => "image",
+            Video => "video",
+            Audio => "audio",
+            Pdf | Office | Text | Markdown | Csv | Json | Binary => "document",
+        }
+    }
+
+    fn media_part_for_attachment(attachment: &crate::models::Attachment) -> Option<serde_json::Value> {
+        let bytes = match &attachment.payload {
+            crate::models::AttachmentPayload::Path { path } => std::fs::read(path).ok()?,
+            crate::models::AttachmentPayload::Bytes { data } => data.as_bytes().to_vec(),
+            crate::models::AttachmentPayload::Url { .. } => return None,
+        };
+        let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes);
+        let kind = Self::attachment_type_label(attachment);
+        Some(serde_json::json!({
+            "type": kind,
+            "mime_type": attachment.mime,
+            "data": data,
+        }))
+    }
+
+    fn document_part_for_attachment(attachment: &crate::models::Attachment) -> Option<serde_json::Value> {
+        let bytes = match &attachment.payload {
+            crate::models::AttachmentPayload::Path { path } => std::fs::read(path).ok()?,
+            crate::models::AttachmentPayload::Bytes { data } => data.as_bytes().to_vec(),
+            crate::models::AttachmentPayload::Url { .. } => return None,
+        };
+        let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes);
+        Some(serde_json::json!({
+            "type": "document",
+            "mime_type": attachment.mime,
+            "data": data,
+        }))
+    }
+
     fn build_interaction_body(&self, request: &crate::models::chat::ChatRequest, stream: bool) -> serde_json::Value {
         let mut system_instruction = String::new();
 
@@ -88,10 +127,38 @@ impl GeminiProvider {
                 match msg.role {
                     Role::System => {}
                     Role::User => {
+                        let mut content_parts = Vec::new();
                         if let Some(content) = &msg.content {
+                            if !content.is_empty() {
+                                content_parts.push(serde_json::json!({ "type": "text", "text": content }));
+                            }
+                        }
+                        for attachment in &msg.attachments {
+                            match attachment.attachment_type {
+                                crate::models::AttachmentType::Image
+                                | crate::models::AttachmentType::Video
+                                | crate::models::AttachmentType::Audio => {
+                                    if let Some(part) = Self::media_part_for_attachment(attachment) {
+                                        content_parts.push(part);
+                                    }
+                                }
+                                crate::models::AttachmentType::Pdf
+                                | crate::models::AttachmentType::Office
+                                | crate::models::AttachmentType::Text
+                                | crate::models::AttachmentType::Markdown
+                                | crate::models::AttachmentType::Csv
+                                | crate::models::AttachmentType::Json
+                                | crate::models::AttachmentType::Binary => {
+                                    if let Some(part) = Self::document_part_for_attachment(attachment) {
+                                        content_parts.push(part);
+                                    }
+                                }
+                            }
+                        }
+                        if !content_parts.is_empty() {
                             input_steps.push(serde_json::json!({
                                 "type": "user_input",
-                                "content": [{ "type": "text", "text": content }]
+                                "content": content_parts
                             }));
                         }
                     }
@@ -383,6 +450,7 @@ impl GeminiProvider {
                     name: None,
                     tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
                     reasoning_content: if reasoning.is_empty() { None } else { Some(reasoning) },
+                    attachments: Vec::new(),
                 },
                 finish_reason: Some("stop".into()),
             }],
@@ -392,13 +460,130 @@ impl GeminiProvider {
     }
 
     fn parse_interaction_response(&self, v: &serde_json::Value, model: String) -> Result<ChatResponse, ProviderError> {
-        let steps = v.get("steps").and_then(|x| x.as_array()).cloned().unwrap_or_default();
-
         let mut text = String::new();
         let mut reasoning = String::new();
         let mut tool_calls = Vec::new();
 
-        for step in &steps {
+        let mut usage_local = v.get("usage").and_then(parse_usage).unwrap_or(Usage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            prompt_tokens_details: None,
+        });
+
+        let mut extract_from_output = |value: &serde_json::Value| {
+            if let Some(output) = value.get("output").and_then(|x| x.as_array()) {
+                Self::extract_text_reasoning_and_tools_from_steps(output, &mut text, &mut reasoning, &mut tool_calls);
+            }
+            if text.is_empty() {
+                if let Some(output) = value.get("output").and_then(|x| x.as_array()) {
+                    for step in output {
+                        if let Some(parts) = step.get("parts").and_then(|x| x.as_array()) {
+                            for part in parts {
+                                if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
+                                    text.push_str(t);
+                                }
+                            }
+                        }
+                        if let Some(content) = step.get("content").and_then(|x| x.as_array()) {
+                            for block in content {
+                                if let Some(parts) = block.get("parts").and_then(|x| x.as_array()) {
+                                    for part in parts {
+                                        if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
+                                            text.push_str(t);
+                                        }
+                                    }
+                                }
+                                if let Some(t) = block.get("text").and_then(|x| x.as_str()) {
+                                    text.push_str(t);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if text.is_empty() {
+                if let Some(parts) = value.get("parts").and_then(|x| x.as_array()) {
+                    for part in parts {
+                        if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
+                            text.push_str(t);
+                        }
+                    }
+                }
+            }
+            if reasoning.is_empty() {
+                if let Some(thought) = value.get("thought").and_then(|x| x.as_str()) {
+                    reasoning.push_str(thought);
+                }
+            }
+        };
+
+        extract_from_output(v);
+        if text.is_empty() {
+            if let Some(steps) = v.get("steps").and_then(|x| x.as_array()) {
+                Self::extract_text_reasoning_and_tools_from_steps(steps, &mut text, &mut reasoning, &mut tool_calls);
+            }
+        }
+        if text.is_empty() {
+            if let Some(candidates) = v.get("candidates").and_then(|x| x.as_array()) {
+                for candidate in candidates {
+                    if let Some(content) = candidate.get("content").and_then(|x| x.as_array()) {
+                        for block in content {
+                            if let Some(parts) = block.get("parts").and_then(|x| x.as_array()) {
+                                for part in parts {
+                                    if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
+                                        text.push_str(t);
+                                    }
+                                }
+                            }
+                            if let Some(t) = block.get("text").and_then(|x| x.as_str()) {
+                                text.push_str(t);
+                            }
+                        }
+                    }
+                    if let Some(parts) = candidate.get("parts").and_then(|x| x.as_array()) {
+                        for part in parts {
+                            if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
+                                text.push_str(t);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        usage_local = v.get("usage").and_then(parse_usage).unwrap_or(usage_local);
+
+        Ok(ChatResponse {
+            id: v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            object: "interaction".into(),
+            created: chrono::Utc::now().timestamp() as u64,
+            model,
+            choices: vec![crate::models::chat::ChatChoice {
+                index: 0,
+                message: crate::models::Message {
+                    role: Role::Assistant,
+                    content: if text.is_empty() { None } else { Some(text) },
+                    tool_call_id: None,
+                    name: None,
+                    tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+                    reasoning_content: if reasoning.is_empty() { None } else { Some(reasoning) },
+                    attachments: Vec::new(),
+                },
+                finish_reason: Some("stop".into()),
+            }],
+            usage: usage_local,
+            extra: HashMap::new(),
+        })
+    }
+
+    fn extract_text_reasoning_and_tools_from_steps(
+        steps: &[serde_json::Value],
+        text: &mut String,
+        reasoning: &mut String,
+        tool_calls: &mut Vec<ToolCall>,
+    ) {
+        for step in steps {
             let step_type = step.get("type").and_then(|x| x.as_str());
             match step_type {
                 Some("model_output") => {
@@ -406,6 +591,15 @@ impl GeminiProvider {
                         for block in content {
                             if let Some(t) = block.get("text").and_then(|x| x.as_str()) {
                                 text.push_str(t);
+                            }
+                        }
+                    }
+                    if text.is_empty() {
+                        if let Some(parts) = step.get("parts").and_then(|x| x.as_array()) {
+                            for part in parts {
+                                if let Some(t) = part.get("text").and_then(|x| x.as_str()) {
+                                    text.push_str(t);
+                                }
                             }
                         }
                     }
@@ -428,34 +622,6 @@ impl GeminiProvider {
                 _ => {}
             }
         }
-
-        let usage = v.get("usage").and_then(parse_usage).unwrap_or(Usage {
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
-            prompt_tokens_details: None,
-        });
-
-        Ok(ChatResponse {
-            id: v.get("id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            object: "interaction".into(),
-            created: chrono::Utc::now().timestamp() as u64,
-            model,
-            choices: vec![crate::models::chat::ChatChoice {
-                index: 0,
-                message: crate::models::Message {
-                    role: Role::Assistant,
-                    content: if text.is_empty() { None } else { Some(text) },
-                    tool_call_id: None,
-                    name: None,
-                    tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
-                    reasoning_content: if reasoning.is_empty() { None } else { Some(reasoning) },
-                },
-                finish_reason: Some("stop".into()),
-            }],
-            usage,
-            extra: HashMap::new(),
-        })
     }
 }
 

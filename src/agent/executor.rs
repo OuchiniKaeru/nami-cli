@@ -88,13 +88,16 @@ impl Agent {
         parts.join("\n\n")
     }
 
-    pub async fn run(&mut self, prompt: impl Into<String>) -> anyhow::Result<Option<String>> {
+    pub async fn run(
+        &mut self,
+        prompt: impl Into<String>,
+        attachments: Vec<crate::models::Attachment>,
+    ) -> anyhow::Result<Option<String>> {
         let start = std::time::Instant::now();
         let cfg = &self.config;
 
         let mut messages: Vec<Message> = self.initial_messages.clone();
 
-        // 新規セッションの場合のみシステムプロンプトを先頭に追加
         if messages.is_empty() {
             let system = self.build_system_prompt();
             if !system.is_empty() {
@@ -102,7 +105,19 @@ impl Agent {
             }
         }
 
-        messages.push(Message::user(prompt.into()));
+        let prompt_str = prompt.into();
+        let parsed = crate::agent::prompt_parser::parse_prompt(&prompt_str, Vec::new());
+        let mut has_text = !parsed.content.trim().is_empty();
+        let mut combined_attachments = attachments;
+        combined_attachments.extend(parsed.attachments);
+        crate::agent::prompt_parser::dedupe_attachments(&mut combined_attachments);
+        if !combined_attachments.is_empty() {
+            has_text = true;
+        }
+        messages.push(Message::user_with_attachments(
+            if has_text { parsed.content } else { String::new() },
+            combined_attachments,
+        ));
 
         let tools = self.tool_router.list_tools().await;
         let mut last_answer: Option<String> = None;
